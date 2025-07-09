@@ -1,4 +1,4 @@
-# 외부-침투 시나리오 & 토큰 유출 데모
+# 토큰 유출 & 외부-침투 시나리오
 
 이 문서는 **Kubernetes v1.33.2** 클러스터(마스터 1, 워커 3)를 대상으로, 외부에서 인증 토큰 유출 → API 침투 → CVE-2021-25741 PoC 실행 → 노드 권한 획득까지의 전 과정을 단계별로 설명합니다.
 
@@ -8,10 +8,9 @@
 
 * **노드 구성**
 
-  * `k8s-master` (10.178.0.2) Control-Plane
-  * `k8s-work1` / `k8s-work2` / `k8s-work3` (10.178.0.3/4/5) Worker
+  * `k8s-master` (Control-Plane)
+  * `k8s-work1` / `k8s-work2` / `k8s-work3` (Worker-node)
 * **버전**: Kubernetes v1.33.2 (CSI SubPath CVE-2021-25741 취약 범위 포함)
-* **로그 파이프라인**: Vector DaemonSet → Kafka(`raw_k8s`) (추후 LLM 정규화)
 
 ---
 
@@ -63,9 +62,11 @@
 
 ---
 
-## 4. 외부 PC(맥)에서 침투 테스트
+## 4. 외부 PC에서 침투 테스트
 
-Mac 터미널에서 순서대로 복붙:
+### Mac OS 환경
+
+터미널에서 순서대로 복붙:
 
 ```bash
 # 1) kubectl 설치

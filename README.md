@@ -1,4 +1,4 @@
-# Kubernetes Privilege-Escalation 시나리오
+# Kubernetes Privilege-Escalation 시나리오&#x20;
 
 > **목표** : 유출된 ServiceAccount 토큰으로 API 침투 → `privileged` 컨테이너 배포 → 노드 **root** 권한 획득
 
@@ -122,7 +122,7 @@ whoami   # → root
 
 ---
 
-## 4. (선택) 감사 로그 활성화 — 탐지용
+## 4. 감사 로그 활성화 — 탐지용
 
 ### 4‑1 정책 파일 `/etc/kubernetes/audit-policy.yaml`
 
@@ -169,7 +169,7 @@ tail -f /var/log/kubernetes/audit.log
 
 ---
 
-## 5. Vector 로그 수집 예시
+## 5. Vector 로그 수집 - 진행중
 
 | 대상          | 경로                              |
 | ----------- | ------------------------------- |
@@ -179,18 +179,7 @@ tail -f /var/log/kubernetes/audit.log
 `vector.toml`
 
 ```toml
-[sources.audit]
-  type    = "file"
-  include = ["/var/log/kubernetes/audit.log"]
-
-[sources.containers]
-  type    = "file"
-  include = ["/var/log/containers/*.log"]
-
-[sinks.loki]
-  type     = "loki"
-  inputs   = ["audit", "containers"]
-  endpoint = "http://loki.example.com:3100"
+작성중
 ```
 
 ---

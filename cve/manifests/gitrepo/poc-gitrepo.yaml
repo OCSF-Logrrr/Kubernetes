@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata: { name: evil-gitrepo }
+spec:
+  volumes:
+  - name: code
+    gitRepo:
+      repository: https://github.com/torvalds/linux.git
+      revision: master
+  containers:
+  - image: busybox
+    name: busy
+    command: ["sleep","3600"]
+    volumeMounts:
+    - { name: code, mountPath: /src }
